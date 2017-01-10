@@ -3,6 +3,7 @@ package mapreduce
 import (
 	"fmt"
 	"strconv"
+	//"strings"
 )
 
 // Debugging enabled?
@@ -31,6 +32,8 @@ type KeyValue struct {
 	Value string
 }
 
+type keyValueSorter []KeyValue
+
 // reduceName constructs the name of the intermediate file which map task
 // <mapTask> produces for reduce task <reduceTask>.
 func reduceName(jobName string, mapTask int, reduceTask int) string {
@@ -40,4 +43,16 @@ func reduceName(jobName string, mapTask int, reduceTask int) string {
 // mergeName constructs the name of the output file of reduce task <reduceTask>
 func mergeName(jobName string, reduceTask int) string {
 	return "mrtmp." + jobName + "-res-" + strconv.Itoa(reduceTask)
+}
+
+func (kv keyValueSorter) Len() int {
+	return len(kv)
+}
+
+func (kv keyValueSorter) Less(i, j int) bool {
+	return kv[i].Key < kv[j].Key
+}
+
+func (kv keyValueSorter) Swap(i, j int) {
+	kv[i], kv[j] = kv[j], kv[i]
 }

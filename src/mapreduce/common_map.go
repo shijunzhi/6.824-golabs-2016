@@ -2,7 +2,16 @@ package mapreduce
 
 import (
 	"hash/fnv"
+	"os"
+	"io/ioutil"
+	"encoding/json"
+	"fmt"
 )
+
+type interFile struct {
+	file *os.File
+	encoder *json.Encoder
+}
 
 // doMap does the job of a map worker: it reads one of the input files
 // (inFile), calls the user-defined map function (mapF) for that file's
@@ -40,6 +49,51 @@ func doMap(
 	//     err := enc.Encode(&kv)
 	//
 	// Remember to close the file after you have written all the values!
+	fileContent, err := ioutil.ReadFile(inFile)
+	if err != nil {
+		fmt.Printf("read file failed: %q\n", err)
+		return
+	}
+	keyValues := mapF(inFile, string(fileContent))
+	debug("output of map function: %d pair key/value\n", len(keyValues))
+
+	var reduceTaskNumber int
+	var interFiles = make([]interFile, nReduce)
+	defer func() {
+		for _, item := range interFiles {
+			if item.file != nil {
+				item.file.Close()
+			}
+		}
+	} ()
+	for _, item := range keyValues {
+		reduceTaskNumber = int(ihash(item.Key) % uint32(nReduce))
+		tmp := interFiles[reduceTaskNumber]
+		if tmp.file == nil {
+			tmp.file, tmp.encoder = newInterFileEncoder(jobName, mapTaskNumber, reduceTaskNumber)
+			if tmp.file == nil {
+				return
+			}
+			interFiles[reduceTaskNumber] = tmp
+		}
+
+		err = tmp.encoder.Encode(&item)
+		if err != nil {
+			fmt.Printf("encode key/value to intermediate file failed: %q\n", err)
+			return
+		}
+	}
+}
+
+func newInterFileEncoder(jobName string, mapTaskNumber int, reduceTaskNumber int) (*os.File, *json.Encoder) {
+	fileName := reduceName(jobName, mapTaskNumber, reduceTaskNumber)
+	interFile, err := os.Create(fileName)
+	if err != nil {
+		fmt.Printf("create intermediate file %s failed: %q\n", fileName, err)
+		return nil, nil
+	}
+	debug("intermediate file %s created\n", fileName)
+	return interFile, json.NewEncoder(interFile)
 }
 
 func ihash(s string) uint32 {

@@ -1,5 +1,13 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"os"
+	"sort"
+	"fmt"
+	"io"
+)
+
 // doReduce does the job of a reduce worker: it reads the intermediate
 // key/value pairs (produced by the map phase) for this task, sorts the
 // intermediate key/value pairs by key, calls the user-defined reduce function
@@ -31,4 +39,78 @@ func doReduce(
 	// 	enc.Encode(KeyValue{key, reduceF(...)})
 	// }
 	// file.Close()
+	keyValues := readInterFiles(jobName, nMap, reduceTaskNumber)
+	if len(keyValues) == 0 {
+		return
+	}
+	debug("parse intermediate file, got %d pair key/value\n", len(keyValues))
+
+	sort.Sort(keyValueSorter(keyValues))
+
+	mergeFileName := mergeName(jobName, reduceTaskNumber)
+	mergeFile, err := os.Create(mergeFileName)
+	if err != nil {
+		fmt.Printf("open merge file %s failed: %q\n", mergeFileName, err)
+		return
+	}
+	defer mergeFile.Close()
+	encoder := json.NewEncoder(mergeFile)
+
+	var prevKey = keyValues[0].Key
+	var values  = []string{}
+	var reduceOutput string
+	for _, kv := range keyValues {
+		if prevKey == kv.Key {
+			values = append(values, kv.Value)
+		} else {
+			reduceOutput = reduceF(prevKey, values)
+
+			err = encoder.Encode(&KeyValue{prevKey, reduceOutput})
+			if err != nil {
+				fmt.Printf("encode merge file %s failed: %q\n", mergeFileName, err)
+				return
+			}
+
+			// new key
+			prevKey = kv.Key
+			values = []string{}
+			values = append(values, kv.Value)
+		}
+	}
+	if len(values) != 0 {
+		reduceOutput = reduceF(prevKey, values)
+		err = encoder.Encode(&KeyValue{prevKey, reduceOutput})
+		if err != nil {
+			fmt.Printf("encode merge file %s failed: %q\n", mergeFileName, err)
+			return
+		}
+	}
+}
+
+func readInterFiles(jobName string, nMap int, reduceTaskNumber int) []KeyValue {
+	var keyValues = []KeyValue{}
+	var kv KeyValue
+	for i := 0; i < nMap; i++ {
+		fileName := reduceName(jobName, i, reduceTaskNumber)
+		interFile, err := os.Open(fileName)
+		if (err != nil) && (!os.IsNotExist(err)) {
+			fmt.Printf("read intermediate file %s failed: %q\n", fileName, err)
+			continue
+		}
+
+		decoder := json.NewDecoder(interFile)
+		for {
+			err = decoder.Decode(&kv)
+			if err != nil {
+				if err != io.EOF {
+					fmt.Printf("decode intermediate file %s failed: %q\n", fileName, err)
+				}
+				break
+			}
+			keyValues = append(keyValues, kv)
+		}
+
+		interFile.Close()
+	}
+	return keyValues
 }
