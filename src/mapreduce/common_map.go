@@ -1,15 +1,15 @@
 package mapreduce
 
 import (
-	"hash/fnv"
-	"os"
-	"io/ioutil"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
+	"io/ioutil"
+	"os"
 )
 
 type interFile struct {
-	file *os.File
+	file    *os.File
 	encoder *json.Encoder
 }
 
@@ -65,7 +65,7 @@ func doMap(
 				item.file.Close()
 			}
 		}
-	} ()
+	}()
 	for _, item := range keyValues {
 		reduceTaskNumber = int(ihash(item.Key) % uint32(nReduce))
 		tmp := interFiles[reduceTaskNumber]

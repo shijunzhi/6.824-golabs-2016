@@ -2,10 +2,10 @@ package mapreduce
 
 import (
 	"encoding/json"
-	"os"
-	"sort"
 	"fmt"
 	"io"
+	"os"
+	"sort"
 )
 
 // doReduce does the job of a reduce worker: it reads the intermediate
@@ -57,7 +57,7 @@ func doReduce(
 	encoder := json.NewEncoder(mergeFile)
 
 	var prevKey = keyValues[0].Key
-	var values  = []string{}
+	var values = []string{}
 	var reduceOutput string
 	for _, kv := range keyValues {
 		if prevKey == kv.Key {

@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"mapreduce"
 	"os"
-	"strings"
 	"strconv"
+	"strings"
 	"unicode"
 )
 
