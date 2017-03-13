@@ -212,11 +212,15 @@ func (rf *Raft) changeRole(old int, new int) {
 		rf.role = FOLLOWER
 		rf.stopElectionChan <- struct{}{}
 	} else if (old == CANDIDATE) && (new == LEADER) {
-		// TODO: init the nextIndex and matchIndex
 		rf.role = LEADER
+		for index, _ := range rf.peers {
+			rf.nextIndex[index] = rf.lastLogIndex + 1
+			rf.matchIndex[index] = 0
+		}
 	} else if (old == LEADER) && (new == FOLLOWER) {
 		rf.role = FOLLOWER
 		rf.heartBeatTimer.stop()
+		rf.electionTimer.reset(0)
 	}
 }
 
@@ -233,25 +237,16 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = false
 		return
-	} else if (rf.CurrentTerm < args.Term) &&
-		((rf.lastLogTerm < args.LastLogTerm) ||
-			((rf.lastLogTerm == args.LastLogTerm) && (rf.lastLogIndex <= args.LastLogIndex))) {
-		DPrintf("%d(%d/%d/%d/%d) vote %d on term %d\n",
-			rf.me, rf.CurrentTerm, rf.VotedFor, rf.lastLogIndex, rf.lastLogTerm, args.CandidateID, args.Term)
+	} else if rf.CurrentTerm < args.Term {
 		rf.CurrentTerm = args.Term
-		rf.VotedFor = args.CandidateID
-        rf.persist()
+		rf.VotedFor = -1
+		rf.persist()
 
 		if rf.role == CANDIDATE {
 			rf.changeRole(CANDIDATE, FOLLOWER)
 		} else if rf.role == LEADER {
 			rf.changeRole(LEADER, FOLLOWER)
 		}
-		reply.Term = rf.CurrentTerm
-		reply.VoteGranted = true
-
-		rf.electionTimer.reset(0)
-		return
 	}
 
 	if ((rf.VotedFor == -1) || (rf.VotedFor == args.CandidateID)) &&
@@ -261,7 +256,7 @@ func (rf *Raft) RequestVote(args RequestVoteArgs, reply *RequestVoteReply) {
 			rf.me, rf.CurrentTerm, rf.VotedFor, rf.lastLogIndex, rf.lastLogTerm, args.CandidateID, args.Term)
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = args.CandidateID
-        rf.persist()
+		rf.persist()
 
 		reply.Term = rf.CurrentTerm
 		reply.VoteGranted = true
@@ -295,19 +290,23 @@ type AppendEntriesReply struct {
 func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	defer rf.electionTimer.reset(0)
-	//DPrintf("%d receive append log RPC from %d on term %d (my team is %d)\n", rf.me, args.LeaderID, args.Term, rf.CurrentTerm)
+
+	if args.LeaderID == rf.VotedFor {
+		rf.electionTimer.reset(0)
+	}
+
+	DPrintf("%d receive append log RPC from %d on term %d (my team is %d)\n", rf.me, args.LeaderID, args.Term, rf.CurrentTerm)
 	if args.Term > rf.CurrentTerm {
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = args.LeaderID
-        rf.persist()
+		rf.persist()
 
 		if rf.role == CANDIDATE {
 			rf.changeRole(CANDIDATE, FOLLOWER)
 		} else if rf.role == LEADER {
 			rf.changeRole(LEADER, FOLLOWER)
 		}
-	} else if (args.Term < rf.CurrentTerm) {
+	} else if args.Term < rf.CurrentTerm {
 		reply.Success = false
 		reply.Term = rf.CurrentTerm
 		return
@@ -324,8 +323,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) 
 			lastLog := rf.Logs[len(rf.Logs)-1]
 			rf.lastLogIndex = lastLog.Index
 			rf.lastLogTerm = lastLog.Term
-			DPrintf("(first)%d accept %d entries from %d, the first index is %d, update last log index to %d\n",
-				rf.me, len(args.Entries), args.LeaderID, args.Entries[0].Index, rf.lastLogIndex)
+			DPrintf("(first)%d accept %d entries from %d/%d, the first index is %d, update last log index to %d\n",
+				rf.me, len(args.Entries), args.LeaderID, args.Term, args.Entries[0].Index, rf.lastLogIndex)
 
 			reply.Success = true
 			reply.Term = rf.CurrentTerm
@@ -361,10 +360,10 @@ func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) 
 			for i := rf.commitIndex; i < lastCommitIndex; i++ {
 				rf.Logs[i].Committed = true
 				rf.commitIndex = i + 1
+				rf.persist()
 				DPrintf("%d commit log %d/%d/%d on index %d\n",
 					rf.me, rf.Logs[i].Index, rf.Logs[i].Term, rf.Logs[i].Command.(int), i+1)
 
-                rf.persist()
 				rf.applyChan <- ApplyMsg{Index: rf.Logs[i].Index, Command: rf.Logs[i].Command}
 			}
 		}
@@ -489,16 +488,18 @@ func (rf *Raft) replicateLog(server int) {
 					if (replicas > len(rf.peers)/2) && (entry.Term == rf.CurrentTerm) {
 						if rf.commitIndex != entry.Index-1 {
 							// commit previous team's log
-							for i := rf.commitIndex; i < entry.Index; i++ {
+							for i := rf.commitIndex; i < (entry.Index - 1); i++ {
 								DPrintf("%d commit previous team entry %d\n", rf.me, rf.Logs[i].Index)
 								rf.Logs[i].Committed = true
-                                rf.persist()
+								rf.persist()
 								rf.applyChan <- ApplyMsg{Index: rf.Logs[i].Index, Command: rf.Logs[i].Command}
 							}
 						}
 
 						DPrintf("%d decide to commit entry %d\n", rf.me, entry.Index)
 						rf.commitIndex = entry.Index
+						rf.Logs[entry.Index-1].Committed = true
+						rf.persist()
 						rf.applyChan <- ApplyMsg{Index: entry.Index, Command: entry.Command}
 					}
 				}
@@ -511,7 +512,7 @@ func (rf *Raft) replicateLog(server int) {
 				if (rf.CurrentTerm < reply.Term) && (rf.role == LEADER) {
 					rf.CurrentTerm = reply.Term
 					rf.VotedFor = server
-                    rf.persist()
+					rf.persist()
 					rf.changeRole(LEADER, FOLLOWER)
 					rf.mu.Unlock()
 					return
@@ -595,19 +596,23 @@ func (rf *Raft) startElection() bool {
 		DPrintf("%d win election on term %d\n", rf.me, rf.CurrentTerm)
 		rf.electionTimer.stop()
 		cancel()
-	case <-rf.electionTimer.t.C:
-		//DPrintf("%d election timeout on term %d\n", rf.me, rf.CurrentTerm)
-		cancel()
-		return false
-
 	case <-rf.stopElectionChan:
 		rf.electionTimer.stop()
+		cancel()
+		return false
+	case <-rf.electionTimer.t.C:
+		//DPrintf("%d election timeout on term %d\n", rf.me, rf.CurrentTerm)
+		rf.mu.Lock()
+		if rf.role == CANDIDATE {
+			rf.VotedFor = -1
+		}
+		rf.mu.Unlock()
 		cancel()
 		return false
 	}
 
 	rf.mu.Lock()
-	rf.role = LEADER
+	rf.changeRole(CANDIDATE, LEADER)
 	rf.mu.Unlock()
 	rf.sendHeartBeat()
 	return true
@@ -623,23 +628,27 @@ func (rf *Raft) run() {
 			rf.mu.Lock()
 			if rf.role == LEADER {
 				rf.heartBeatTimer.reset(0)
-			} else if !success {
+			}
+			rf.mu.Unlock()
+
+			if !success {
 				electionTime := time.Duration(randomInt(MinElectionTime, MaxElectionTime)) * time.Millisecond
 				rf.electionTimer.reset(electionTime)
 			}
-			rf.mu.Unlock()
 		case <-rf.heartBeatTimer.t.C:
-			rf.sendHeartBeat()
-
 			rf.mu.Lock()
 			if rf.role == LEADER {
 				rf.heartBeatTimer.reset(0)
 			}
 			rf.mu.Unlock()
+
+			rf.sendHeartBeat()
 		case <-rf.stopChan:
 			return
+		case <-rf.stopElectionChan:
+			// consume notification to avoid affect next round election
+			continue
 		}
-		rf.electionTimer.reset(0)
 	}
 }
 

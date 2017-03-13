@@ -17,11 +17,6 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	return
 }
 
-func IPrintf(format string, a ...interface{}) (n int, err error) {
-	log.Printf(format, a...)
-	return
-}
-
 func randomInt(min, max int) int {
 	var n int
 	r := rand.New(rand.NewSource(time.Now().UnixNano()))
