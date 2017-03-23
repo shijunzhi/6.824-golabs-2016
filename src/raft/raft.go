@@ -275,8 +275,10 @@ type AppendEntriesArg struct {
 }
 
 type AppendEntriesReply struct {
-	Term    int
-	Success bool
+	Term          int
+	Success       bool
+	ConflictIndex int
+	ConflictTerm  int
 }
 
 func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) {
@@ -298,6 +300,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) 
 	if args.Term > rf.CurrentTerm {
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = args.LeaderID
+
 		rf.persist()
 
 		if rf.role == CANDIDATE {
@@ -311,6 +314,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) 
 	} else if args.Term < rf.CurrentTerm {
 		reply.Success = false
 		reply.Term = rf.CurrentTerm
+		reply.ConflictIndex = 0
+		reply.ConflictTerm = 0
 		return
 	}
 
@@ -318,12 +323,21 @@ func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) 
 		if len(rf.Logs) < args.PrevLogIndex {
 			reply.Success = false
 			reply.Term = rf.CurrentTerm
+			reply.ConflictIndex = len(rf.Logs)
+			reply.ConflictTerm = 0
 			return
 		} else {
 			prevLog := rf.Logs[args.PrevLogIndex-1]
 			if prevLog.Term != args.PrevLogTerm {
 				reply.Success = false
 				reply.Term = rf.CurrentTerm
+				reply.ConflictTerm = prevLog.Term
+				for i := 0; i < args.PrevLogIndex; i++ {
+					if rf.Logs[i].Term == prevLog.Term {
+						reply.ConflictIndex = i + 1
+						break
+					}
+				}
 				return
 			}
 		}
@@ -356,6 +370,8 @@ func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) 
 
 	reply.Success = true
 	reply.Term = rf.CurrentTerm
+	reply.ConflictTerm = 0
+	reply.ConflictIndex = 0
 
 	if args.LeaderCommit > rf.CommitIndex {
 		var lastNewLogIndex int
@@ -496,10 +512,14 @@ func (rf *Raft) replicateLog(server int) {
 		ok := rf.peers[server].Call("Raft.AppendEntries", args, &reply)
 
 		rf.mu.Lock()
-		if rf.role != LEADER {
-			rf.replInProgress[server] = false
-			rf.mu.Unlock()
-			return
+		if args.Term != rf.CurrentTerm {
+			if rf.role != LEADER {
+				rf.replInProgress[server] = false
+				rf.mu.Unlock()
+				return
+			} else {
+				continue
+			}
 		}
 
 		if ok {
@@ -550,8 +570,25 @@ func (rf *Raft) replicateLog(server int) {
 					rf.mu.Unlock()
 					return
 				} else {
-					if rf.nextIndex[server] > 1 {
-						rf.nextIndex[server]--
+					if reply.ConflictTerm != 0 {
+						found := false
+						for i := 0; i < len(rf.Logs); i++ {
+							if rf.Logs[i].Term == reply.ConflictTerm {
+								found = true
+								rf.nextIndex[server] = i + 1
+								continue
+							}
+							if rf.Logs[i].Term != reply.ConflictTerm && found {
+								break
+							}
+						}
+						if !found {
+							rf.nextIndex[server] = reply.ConflictIndex
+						}
+					} else {
+						if reply.ConflictIndex != 0 {
+							rf.nextIndex[server] = reply.ConflictIndex
+						}
 					}
 				}
 			}
