@@ -32,7 +32,7 @@ const (
 	CANDIDATE
 	FOLLOWER
 
-	MaxElectionTime = 500
+	MaxElectionTime = 600
 	MinElectionTime = 300
 
 	HeartBeatInterval time.Duration = 150 * time.Millisecond
@@ -297,7 +297,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArg, reply *AppendEntriesReply) 
 			rf.me, args.LeaderID, args.Term, rf.CurrentTerm, rf.VotedFor)
 	}
 
-	if args.Term > rf.CurrentTerm {
+	if args.Term >= rf.CurrentTerm {
 		rf.CurrentTerm = args.Term
 		rf.VotedFor = args.LeaderID
 
@@ -431,14 +431,10 @@ func (rf *Raft) sendHeartBeat() {
 	heartBeatArg := AppendEntriesArg{
 		Term:         rf.CurrentTerm,
 		LeaderID:     rf.me,
-		PrevLogIndex: 0,
-		PrevLogTerm:  0,
+		PrevLogIndex: rf.lastLogIndex,
+		PrevLogTerm:  rf.lastLogTerm,
 		Entries:      []LogEntry{},
 		LeaderCommit: rf.CommitIndex}
-	if len(rf.Logs) != 0 {
-		heartBeatArg.PrevLogIndex = rf.lastLogIndex
-		heartBeatArg.PrevLogTerm = rf.lastLogTerm
-	}
 	rf.mu.Unlock()
 
 	asyncCall := func(server int) {
@@ -615,7 +611,6 @@ func (rf *Raft) electLeader() {
 			LastLogTerm:  rf.lastLogTerm}
 		rf.mu.Unlock()
 
-		var lock sync.Mutex
 		votedNum := 1
 		win := make(chan struct{}, len(rf.peers))
 
@@ -628,31 +623,25 @@ func (rf *Raft) electLeader() {
 				rf.mu.Unlock()
 				return
 			}
-			rf.mu.Unlock()
 
 			if ok {
 				if reply.VoteGranted {
-					lock.Lock()
 					(*votedNum)++
 
 					if (*votedNum) > len(rf.peers)/2 {
-						lock.Unlock()
 
 						DPrintf("%d win election on term %d\n", rf.me, rf.CurrentTerm)
 						rf.electionTimer.stop()
 
-						rf.mu.Lock()
 						rf.changeRole(CANDIDATE, LEADER)
 						rf.mu.Unlock()
 
 						rf.sendHeartBeat()
 
 						win <- struct{}{}
-					} else {
-						lock.Unlock()
+						return
 					}
 				} else {
-					rf.mu.Lock()
 					if rf.CurrentTerm < reply.Term {
 						rf.CurrentTerm = reply.Term
 						rf.VotedFor = -1
@@ -660,9 +649,9 @@ func (rf *Raft) electLeader() {
 						rf.role = FOLLOWER
 						rf.stopElectionChan <- struct{}{}
 					}
-					rf.mu.Unlock()
 				}
 			}
+			rf.mu.Unlock()
 		}
 
 		rf.electionTimer.reset(0)
@@ -795,6 +784,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	rf.heartBeatTimer = newRaftTimer(HeartBeatInterval)
 	electionTime := time.Duration(randomInt(MinElectionTime, MaxElectionTime)) * time.Millisecond
+	DPrintf("%d election timeout is %d\n", rf.me, electionTime)
 	rf.electionTimer = newRaftTimer(electionTime)
 
 	rf.replInProgress = make([]bool, len(peers))
