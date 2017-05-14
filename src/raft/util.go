@@ -5,6 +5,8 @@ import (
 	"math/rand"
 	"sync"
 	"time"
+	//"fmt"
+	//"os"
 )
 
 // Debugging
@@ -14,8 +16,40 @@ func DPrintf(format string, a ...interface{}) (n int, err error) {
 	if Debug > 0 {
 		log.Printf(format, a...)
 	}
+
 	return
 }
+
+
+//type logCache struct {
+//	mu sync.Mutex
+//	buf []string
+//}
+//
+//var logbuf logCache
+//
+//func DPrintf(format string, a ...interface{}) (n int, err error) {
+//	if Debug > 0 {
+//		s := fmt.Sprintf(format, a...)
+//		logbuf.mu.Lock()
+//		logbuf.buf = append(logbuf.buf, s)
+//		logbuf.mu.Unlock()
+//	}
+//
+//	return
+//}
+//
+//func InitLog() {
+//	logbuf.buf = make([]string, 0)
+//}
+//
+//func OutputLog() {
+//	logbuf.mu.Lock()
+//	for _, item := range logbuf.buf {
+//		fmt.Fprint(os.Stderr, item)
+//	}
+//	logbuf.mu.Unlock()
+//}
 
 func randomInt(min, max int) int {
 	var n int
@@ -55,16 +89,13 @@ func (timer *raftTimer) stop() {
 	timer.mu.Unlock()
 }
 
-func (timer *raftTimer) reset(interval time.Duration) {
+func (timer *raftTimer) reset() {
 	timer.mu.Lock()
 	if !timer.t.Stop() {
 		select {
 		case <-timer.t.C:
 		default:
 		}
-	}
-	if interval != 0 {
-		timer.d = interval
 	}
 	timer.t.Reset(timer.d)
 	timer.mu.Unlock()
